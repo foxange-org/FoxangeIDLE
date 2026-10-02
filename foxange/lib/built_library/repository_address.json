@@ -1,0 +1,6 @@
+{
+  "Types": "./foxange/lib/built_library/Types.fx",
+  "Test": "./foxange/lib/built_library/Test.fx",
+  "algorithm": "./foxange/lib/built_library/algorithm.fx",
+  "test_pkg": "C:\\Users\\slc\\AppData\\Roaming\\Tencent\\Marvis\\User\\oAN1i2WoWTPOvsTD-qWp7-Wh4lb8\\workspace\\conv_19efe98806b_46b55e84f996\\output\\foxange\\lib\\packages\\test_pkg\\main.fx"
+}

@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "sources": [
+    "File Variables",
+    "Keywords",
+    "Builtins"
+  ]
+}

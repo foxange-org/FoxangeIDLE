@@ -1,0 +1,15 @@
+{
+  "bg": "#ffffff",
+  "fg": "#000000",
+  "keyword": "#ff7700",
+  "builtin": "#900090",
+  "string": "#00aa00",
+  "comment": "#dd0000",
+  "number": "#000000",
+  "definition": "#0000ff",
+  "shell_prompt": "#0000dc",
+  "shell_error": "#dc0000",
+  "shell_blue": "#0000c8",
+  "sel_bg": "#c8dcff",
+  "input_prompt": "#0000c8"
+}
