@@ -15,6 +15,18 @@ class StringLiteral(ASTNode):
     value: str
 
 @dataclass
+class FStringLiteral(ASTNode):
+    template: str
+
+@dataclass
+class RawStringLiteral(ASTNode):
+    value: str
+
+@dataclass
+class RawFStringLiteral(ASTNode):
+    template: str
+
+@dataclass
 class CharLiteral(ASTNode):
     value: str
 
@@ -61,6 +73,7 @@ class OperatorFuncDef(ASTNode):
     is_private: bool = False
     is_inline: bool = False
     format_template: str = ""
+    target_type: Optional[str] = None
 
 @dataclass
 class TernaryExpr(ASTNode):

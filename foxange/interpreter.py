@@ -69,6 +69,7 @@ class FoxangeInterpreter:
         self._imported_modules_by_path = {}
         self._operator_kernels = self._build_operator_kernels()
         self._operator_overloads = {}
+        self._typed_operator_overloads = {}
         self._error_types = {}
         self.annotations = []
         self._register_builtins()
@@ -113,11 +114,11 @@ class FoxangeInterpreter:
         self.global_env.define("len", self.builtins.builtin_len)
         self.global_env.define("del", self.builtins.builtin_del)
         self.global_env.define("open", self.builtins.builtin_open)
-        self.global_env.define("int", self.builtins.builtin_int)
-        self.global_env.define("float", self.builtins.builtin_float)
-        self.global_env.define("str", self.builtins.builtin_str)
-        self.global_env.define("bool", self.builtins.builtin_bool)
-        self.global_env.define("char", self.builtins.builtin_char)
+        self.global_env.define("int", FoxangeType(int, custom_call=self.builtins.builtin_int))
+        self.global_env.define("float", FoxangeType(float, custom_call=self.builtins.builtin_float))
+        self.global_env.define("str", FoxangeType(str, custom_call=self.builtins.builtin_str))
+        self.global_env.define("bool", FoxangeType(bool, custom_call=self.builtins.builtin_bool))
+        self.global_env.define("char", FoxangeType(str, custom_call=self.builtins.builtin_char))
         self.global_env.define("List", FoxangeList)
         self.global_env.define("Map", FoxangeMap)
         self.global_env.define("Set", FoxangeSet)
@@ -203,6 +204,68 @@ class FoxangeInterpreter:
     def _eval_StringLiteral(self, node, env):
         return node.value
 
+    def _eval_RawStringLiteral(self, node, env):
+        return node.value
+
+    def _eval_RawFStringLiteral(self, node, env):
+        return self._eval_FStringLiteral(node, env)
+
+    def _eval_FStringLiteral(self, node, env):
+        template = node.template
+        parts = []
+        buf = []
+        i = 0
+        n = len(template)
+        while i < n:
+            ch = template[i]
+            if ch == "{":
+                if i + 1 < n and template[i + 1] == "{":
+                    buf.append("{")
+                    i += 2
+                    continue
+                depth = 1
+                j = i + 1
+                while j < n and depth > 0:
+                    if template[j] == "{":
+                        depth += 1
+                    elif template[j] == "}":
+                        depth -= 1
+                    j += 1
+                if depth != 0:
+                    raise FoxangeError(
+                        "Unterminated { in f-string", exc_type="SyntaxError",
+                        file_path=self.current_file_path, line=node.line, col=node.col)
+                expr_src = template[i + 1:j - 1]
+                if buf:
+                    parts.append("".join(buf))
+                    buf = []
+                parts.append(self._eval_fstring_expr(expr_src, env))
+                i = j
+                continue
+            if ch == "}":
+                if i + 1 < n and template[i + 1] == "}":
+                    buf.append("}")
+                    i += 2
+                    continue
+                buf.append("}")
+                i += 1
+                continue
+            buf.append(ch)
+            i += 1
+        if buf:
+            parts.append("".join(buf))
+        return "".join(str(p) if not isinstance(p, str) else p for p in parts)
+
+    def _eval_fstring_expr(self, src, env):
+        from .lexer import Lexer
+        from .parser import Parser
+        lexer = Lexer(src)
+        lexer.fstring_expr_mode = True
+        toks = lexer.tokenize()
+        parser = Parser(toks)
+        node = parser.expression()
+        return self.eval(node, env)
+
     def _eval_CharLiteral(self, node, env):
         return node.value
 
@@ -236,6 +299,14 @@ class FoxangeInterpreter:
         )
         closure = self.global_env if node.is_inline else env
         func = FoxangeFunction(func_node, closure)
+        if node.target_type is not None:
+            tkey = node.target_type
+            overload = self._typed_operator_overloads.get((tkey, key))
+            if overload is None:
+                overload = FoxangeOverload(name)
+                self._typed_operator_overloads[(tkey, key)] = overload
+            overload.add(func)
+            return func
         overload = self._operator_overloads.get(key)
         if overload is None:
             overload = FoxangeOverload(name)
@@ -254,6 +325,11 @@ class FoxangeInterpreter:
             if opm is not None:
                 bound = FoxangeBoundMethod(opm, vals[0])
                 return bound.call(self, vals[1:], {})
+        tkey = _typed_target_key(vals[0])
+        if tkey is not None:
+            overload = self._typed_operator_overloads.get((tkey, key))
+            if overload is not None and overload._select(vals[1:], {}) is not None:
+                return overload.call(self, vals[1:])
         overload = self._operator_overloads.get(key)
         if overload is not None and overload._select(vals, {}) is not None:
             return overload.call(self, vals)
@@ -448,6 +524,8 @@ class FoxangeInterpreter:
             return None
         if isinstance(target, (FoxangeClass, FoxangeStruct)):
             return target.instantiate(self, [])
+        if isinstance(target, FoxangeType):
+            return self._default_for_type(target.name, env)
         return None
 
     def _eval_VarDecl(self, node, env):
@@ -821,12 +899,24 @@ class FoxangeInterpreter:
 
     def _eval_IndexAccess(self, node, env):
         obj = self.eval(node.obj, env)
+        if isinstance(node.index, SliceExpr):
+            start = self.eval(node.index.start, env) if node.index.start is not None else None
+            stop = self.eval(node.index.stop, env) if node.index.stop is not None else None
+            step = self.eval(node.index.step, env) if node.index.step is not None else None
+            return obj[start:stop:step]
         index = self.eval(node.index, env)
+        if isinstance(index, int) and index < 0 and isinstance(obj, str):
+            return obj[index]
         if isinstance(obj, FoxangeInstance):
             opm = getattr(obj.cls, "operator_methods", {}).get(("[", "]"))
             if opm is not None:
                 bound = FoxangeBoundMethod(opm, obj)
                 return bound.call(self, [index], {})
+        tkey = _typed_target_key(obj)
+        if tkey is not None:
+            overload = self._typed_operator_overloads.get((tkey, ("[", "]")))
+            if overload is not None and overload._select([index], {}) is not None:
+                return overload.call(self, [index])
         return obj[index]
 
     def _eval_ClassDef(self, node, env):
@@ -898,7 +988,7 @@ class FoxangeInterpreter:
                     if os.path.isabs(repo_path):
                         search_paths.append(repo_path)
                     else:
-                        base_dir = self.current_file_dir or os.path.dirname(os.path.abspath(__file__))
+                        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                         search_paths.append(os.path.join(base_dir, repo_path))
             except (json.JSONDecodeError, IOError):
                 pass
@@ -916,7 +1006,7 @@ class FoxangeInterpreter:
                     return mod
                 self._imported_modules_by_path[abs_path] = None
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
+                    with open(path, "r", encoding="utf-8-sig") as f:
                         source = f.read()
                     pp = Preprocessor()
                     source = pp.process(source)
@@ -1087,6 +1177,35 @@ def _type_of(value):
     return "any"
 
 
+def _typed_target_key(value):
+    """返回类型化运算符的匹配键：内置类型名 / 自定义类名 / None。"""
+    if isinstance(value, FoxangeType):
+        return "type"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, FoxangeList):
+        return "list"
+    if isinstance(value, FoxangeMap):
+        return "map"
+    if isinstance(value, FoxangeSet):
+        return "set"
+    if isinstance(value, FoxangeQueue):
+        return "queue"
+    if isinstance(value, FoxangeStack):
+        return "stack"
+    if isinstance(value, FoxangePair):
+        return "pair"
+    if isinstance(value, FoxangeInstance):
+        return value.cls.name
+    return None
+
+
 def _ptype_matches(ptype, value):
     """形参类型标注是否接受该实参。ptype 如 int / float / list<int> / [str] / any。"""
     if ptype is None:
@@ -1099,6 +1218,8 @@ def _ptype_matches(ptype, value):
         return _type_of(value) == "void"
     if main in ("func", "function", "callable"):
         return callable(value)
+    if main == "type":
+        return isinstance(value, FoxangeType)
     return main == _type_of(value)
 
 
@@ -1368,7 +1489,7 @@ _repl_preprocessor = Preprocessor()
 
 def run_file(filepath):
     import os
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         source = f.read()
     pp = Preprocessor()
     source = pp.process(source)

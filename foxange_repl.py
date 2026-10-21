@@ -13,6 +13,25 @@ from foxange.ast_nodes import ExpressionStmt, InputStmt
 from foxange.error_utils import FoxangeError, format_error
 
 REPL_FILES_PATH = os.path.join(SCRIPT_DIR, "foxange", "lib", "repl", "repl_files.json")
+INFO_FILE = os.path.join(SCRIPT_DIR, "info.json")
+
+
+def load_info():
+    try:
+        with open(INFO_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = None
+    if isinstance(data, list) and data:
+        return data[0]
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
+INFO = load_info()
+INFO_NAME = INFO.get("name", "Foxange")
+INFO_VERSION = INFO.get("version", "1.1")
 
 def load_file(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -32,6 +51,7 @@ def load_repl_files():
 
 
 if __name__ == "__main__":
+    print(f"{INFO_NAME} {INFO_VERSION} REPL")
     interpreter = FoxangeInterpreter()
     interpreter.current_file_dir = SCRIPT_DIR
 

@@ -1,15 +1,42 @@
-import os
+﻿import os
 import re
 import sys
 import io
 import json
 import math
+import shutil
+import tempfile
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, colorchooser
+from tkinter import ttk, filedialog, messagebox, colorchooser, simpledialog
 
 _FX_DIR = os.path.dirname(os.path.abspath(__file__))
 if _FX_DIR not in sys.path:
     sys.path.insert(0, _FX_DIR)
+
+_INFO_FILE = os.path.join(_FX_DIR, "info.json")
+
+
+def load_info():
+    try:
+        with open(_INFO_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = None
+    if isinstance(data, list) and data:
+        info = data[0]
+    elif isinstance(data, dict):
+        info = data
+    else:
+        info = {}
+    return info
+
+
+_INFO = load_info()
+_INFO_NAME = _INFO.get("name", "Foxange")
+_INFO_VERSION = _INFO.get("version", "1.1")
+_INFO_AUTHOR = _INFO.get("author", "SLC_Extreme")
+_INFO_BUGS_URL = _INFO.get("bugs_url", "https://bugs-foxange.fwh.is")
+_INFO_WEBSITE = _INFO.get("website", "https://foxange.fwh.is")
 
 _FOXANGE_DIR = os.path.join(_FX_DIR, "foxange")
 _SET_DIR = os.path.join(_FOXANGE_DIR, "lib", "set")
@@ -25,6 +52,205 @@ DEFAULT_SETTINGS = {
     "show_linenums": False,
     "show_diagnostics": False,
 }
+
+
+class _PkgOps:
+    _BLIB = os.path.join(_FOXANGE_DIR, "lib", "built_library")
+
+    @staticmethod
+    def _repo_path():
+        return os.path.join(_PkgOps._BLIB, "repository_address.json")
+
+    @staticmethod
+    def _load_repo():
+        path = _PkgOps._repo_path()
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8-sig") as f:
+                return json.load(f)
+        return {}
+
+    @staticmethod
+    def _save_repo(repo):
+        path = _PkgOps._repo_path()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(repo, f, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def _is_installed(pkg_name):
+        manifest_path = os.path.join(_PkgOps._BLIB, pkg_name, "package.fx.json")
+        return os.path.exists(manifest_path)
+
+    @staticmethod
+    def _list_installed():
+        blib = _PkgOps._BLIB
+        result = []
+        if os.path.exists(blib):
+            for name in os.listdir(blib):
+                pkg_dir = os.path.join(blib, name)
+                manifest_path = os.path.join(pkg_dir, "package.fx.json")
+                if os.path.isfile(manifest_path):
+                    with open(manifest_path, "r", encoding="utf-8") as f:
+                        result.append(json.load(f))
+        repo = _PkgOps._load_repo()
+        project_root = _FX_DIR
+        for name, path in repo.items():
+            if any(p["name"] == name for p in result):
+                continue
+            abs_path = os.path.normpath(os.path.join(project_root, path))
+            if os.path.isfile(abs_path) and abs_path.endswith(".fx"):
+                result.append({
+                    "name": name,
+                    "version": "(builtin)",
+                    "description": os.path.basename(abs_path),
+                    "kind": "builtin",
+                })
+        return result
+
+    @staticmethod
+    def _install_from_dir(source_dir, manifest):
+        name = manifest["name"]
+        version = manifest.get("version", "0.1.0")
+        blib = _PkgOps._BLIB
+        os.makedirs(blib, exist_ok=True)
+        install_dir = os.path.join(blib, name)
+        if os.path.exists(install_dir):
+            shutil.rmtree(install_dir)
+        shutil.copytree(source_dir, install_dir)
+        repo = _PkgOps._load_repo()
+        main_file = manifest.get("main", "")
+        if main_file:
+            main_path = os.path.join(install_dir, main_file)
+            repo[name] = main_path
+        for export_name in manifest.get("exports", []):
+            repo[export_name] = os.path.join(install_dir, export_name + ".fx")
+        _PkgOps._save_repo(repo)
+        deps = manifest.get("dependencies", {})
+        missing = []
+        for dep_name, dep_ver in deps.items():
+            if not _PkgOps._is_installed(dep_name):
+                missing.append(f"{dep_name} (>={dep_ver})")
+        if missing:
+            print(f"  Missing dependencies: {', '.join(missing)} (install manually)")
+        return name, version
+
+    @staticmethod
+    def install(source):
+        if source.lower().endswith(".zip"):
+            if not os.path.isfile(source):
+                raise FileNotFoundError(f"Archive not found: {source}")
+            tmpdir = tempfile.mkdtemp(prefix="foxpkg_")
+            try:
+                shutil.unpack_archive(source, tmpdir, "zip")
+                candidates = []
+                for root, dirs, files in os.walk(tmpdir):
+                    depth = root[len(tmpdir):].count(os.sep)
+                    if depth > 1:
+                        continue
+                    if "package.fx.json" in files:
+                        candidates.append(root)
+                if not candidates:
+                    raise FileNotFoundError("package.fx.json not found in archive")
+                source_dir = tmpdir if tmpdir in candidates else candidates[0]
+                manifest_path = os.path.join(source_dir, "package.fx.json")
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                name, version = _PkgOps._install_from_dir(source_dir, manifest)
+                print(f"Installed {name} {version} (from zip)")
+                return name, version
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+        source_dir = source
+        manifest_path = os.path.join(source_dir, "package.fx.json")
+        if not os.path.exists(manifest_path):
+            raise FileNotFoundError(f"Not found: {manifest_path}; not a valid Foxange package")
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        name, version = _PkgOps._install_from_dir(source_dir, manifest)
+        print(f"Installed {name} {version}")
+        return name, version
+
+    @staticmethod
+    def uninstall(pkg_name):
+        blib = _PkgOps._BLIB
+        install_dir = os.path.join(blib, pkg_name)
+        install_dir_abs = os.path.abspath(install_dir)
+        if not os.path.exists(install_dir):
+            raise FileNotFoundError(f"Package '{pkg_name}' is not installed")
+        shutil.rmtree(install_dir)
+        repo = _PkgOps._load_repo()
+        keys_to_remove = [
+            k for k, v in repo.items()
+            if os.path.abspath(v).startswith(install_dir_abs + os.sep)
+            or os.path.abspath(v) == install_dir_abs
+        ]
+        for k in keys_to_remove:
+            del repo[k]
+        _PkgOps._save_repo(repo)
+        print(f"Uninstalled {pkg_name}")
+
+    @staticmethod
+    def list_packages():
+        packages = _PkgOps._list_installed()
+        if not packages:
+            print("(no packages installed)")
+            return
+        print(f"{'Name':<20} {'Version':<10} {'Type':<6} {'Description'}")
+        print("-" * 60)
+        for pkg in packages:
+            desc = pkg.get("description", "")[:30]
+            ver = pkg.get("version", "?")
+            kind = "builtin" if pkg.get("kind") == "builtin" else "pkg"
+            print(f"{pkg['name']:<20} {ver:<10} {kind:<6} {desc}")
+
+    @staticmethod
+    def info(pkg_name):
+        manifest_path = os.path.join(_PkgOps._BLIB, pkg_name, "package.fx.json")
+        if not os.path.exists(manifest_path):
+            raise FileNotFoundError(f"Package '{pkg_name}' is not installed")
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        print(f"Name:     {manifest['name']}")
+        print(f"Version:  {manifest.get('version', '-')}")
+        print(f"Author:   {manifest.get('author', '-')}")
+        print(f"Description: {manifest.get('description', '-')}")
+        print(f"Entry:    {manifest.get('main', '-')}")
+        print(f"Exports:  {', '.join(manifest.get('exports', [])) or '-'}")
+        deps = manifest.get("dependencies", {})
+        if deps:
+            print(f"Dependencies:")
+            for dep, ver in deps.items():
+                print(f"  - {dep} >={ver}")
+        else:
+            print(f"Dependencies:     none")
+
+    @staticmethod
+    def init_package(target_dir, name):
+        os.makedirs(target_dir, exist_ok=True)
+        manifest = {
+            "name": name,
+            "version": "0.1.0",
+            "description": "",
+            "author": "",
+            "main": "main.fx",
+            "exports": [],
+            "dependencies": {},
+        }
+        manifest_path = os.path.join(target_dir, "package.fx.json")
+        if os.path.exists(manifest_path):
+            print(f"Warning: {manifest_path} already exists; it will be overwritten")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        main_path = os.path.join(target_dir, "main.fx")
+        if not os.path.exists(main_path):
+            with open(main_path, "w", encoding="utf-8") as f:
+                f.write(f'""" {name} package entry """\n')
+                f.write(f'\n')
+                f.write(f'def hello() :\n')
+                f.write(f'    print("Hello from {name}!")\n')
+        print(f"Initialized package {name} at {target_dir}")
+        print(f"  - {manifest_path}")
+        print(f"  - {main_path}")
+
 
 MAIN_SIZE = "880x850"
 SHELL_SIZE = "880x850"
@@ -177,6 +403,10 @@ class CompletionProvider:
     def __init__(self):
         self.enabled = False
         self.sources = list(self.DEFAULT_SOURCES)
+        self.vars_enabled = True
+        self.funcs_enabled = True
+        self.classes_enabled = True
+        self.ops_enabled = True
         self.load()
 
     def load(self):
@@ -194,6 +424,10 @@ class CompletionProvider:
                         if s not in valid:
                             valid.append(s)
                     self.sources = valid
+                self.vars_enabled = bool(data.get("vars_enabled", True))
+                self.funcs_enabled = bool(data.get("funcs_enabled", True))
+                self.classes_enabled = bool(data.get("classes_enabled", True))
+                self.ops_enabled = bool(data.get("ops_enabled", True))
         except Exception as e:
             print(f"[Foxange] Failed to load completion settings: {e}")
 
@@ -201,22 +435,48 @@ class CompletionProvider:
         try:
             os.makedirs(_SET_DIR, exist_ok=True)
             with open(_COMPLETION_FILE, "w", encoding="utf-8") as f:
-                json.dump({"enabled": self.enabled, "sources": self.sources},
-                          f, ensure_ascii=False, indent=2)
+                json.dump({
+                    "enabled": self.enabled,
+                    "sources": self.sources,
+                    "vars_enabled": self.vars_enabled,
+                    "funcs_enabled": self.funcs_enabled,
+                    "classes_enabled": self.classes_enabled,
+                    "ops_enabled": self.ops_enabled,
+                }, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[Foxange] Failed to save completion settings: {e}")
 
     def get_candidates(self, text, prefix):
         if not prefix:
             return []
+        if not (self.vars_enabled or self.funcs_enabled
+                or self.classes_enabled or self.ops_enabled):
+            return []
+        classes = self._declared_classes(text)
+        funcs = self._declared_funcs(text)
+        vars_ = self._declared_vars(text)
         seen = set()
         result = []
         for source in self.sources:
             for word in self._get_source_words(source, text):
-                if word.startswith(prefix) and word != prefix and word not in seen:
-                    seen.add(word)
-                    result.append(word)
+                if not word.startswith(prefix) or word == prefix or word in seen:
+                    continue
+                if not self._pass_filter(word, classes, funcs, vars_):
+                    continue
+                seen.add(word)
+                result.append(word)
         return result
+
+    def _pass_filter(self, word, classes, funcs, vars_):
+        if word in OPERATOR_KEYWORDS:
+            return self.ops_enabled
+        if word in classes:
+            return self.classes_enabled
+        if word in funcs:
+            return self.funcs_enabled
+        if word in vars_:
+            return self.vars_enabled
+        return True
 
     def _get_source_words(self, source, text):
         if source == "Keywords":
@@ -226,6 +486,29 @@ class CompletionProvider:
         if source == "File Variables":
             return self._extract_vars(text)
         return []
+
+    def _declared_vars(self, text):
+        names = set()
+        for m in re.finditer(r"\blet\s+([A-Za-z_]\w*)\s*(?:<[^>\n]*>)?\s*=", text):
+            names.add(m.group(1))
+        for m in re.finditer(r"\bself\.([A-Za-z_]\w*)", text):
+            names.add(m.group(1))
+        for m in re.finditer(r"\bfor\s+([A-Za-z_]\w*)\s+in\s+", text):
+            names.add(m.group(1))
+        return list(names)
+
+    def _declared_funcs(self, text):
+        names = set(BUILTIN_FUNC_NAMES)
+        for m in re.finditer(r"\b(?:def|func)\s+([A-Za-z_]\w*)", text):
+            names.add(m.group(1))
+        return list(names)
+
+    def _declared_classes(self, text):
+        names = set(BUILTIN_TYPE_NAMES)
+        names.update(self._error_type_names(text))
+        for m in re.finditer(r"\b(?:class|struct)\s+([A-Za-z_]\w*)", text):
+            names.add(m.group(1))
+        return list(names)
 
     def _error_type_names(self, text):
         names = set((
@@ -399,6 +682,19 @@ BUILTINS = {"print", "input", "int", "float", "str", "bool",
             "List", "Map", "Set", "Queue", "Stack", "Pair",
             "types", "errors"}
 
+OPERATOR_KEYWORDS = frozenset({
+    "and", "or", "not", "is", "in",
+    "mod", "xor", "pow", "operator",
+})
+BUILTIN_TYPE_NAMES = frozenset({
+    "int", "float", "str", "bool", "char", "type",
+    "List", "Map", "Set", "Queue", "Stack", "Pair",
+    "types", "errors",
+})
+BUILTIN_FUNC_NAMES = frozenset({
+    "print", "input", "len", "open", "run_to_python",
+})
+
 FONT_FAMILY = "Consolas"
 FONT_SIZE = 11
 
@@ -454,6 +750,16 @@ def highlight(text_widget, start="1.0", end="end-1c"):
             continue
         if c == '"' or c == "'":
             q = c
+            start = i
+            p = i - 1
+            if p >= 0 and src[p] in "rf" \
+                    and (p == 0 or not (src[p - 1].isalnum() or src[p - 1] == "_")) \
+                    and (src[p] in "r" or (src[p] == "f" and q == '"')):
+                start = p
+            if p - 1 >= 0 and src[p] in "rf" and src[p - 1] in "rf" \
+                    and ((src[p - 1] == "r" and src[p] == "f") or (src[p - 1] == "f" and src[p] == "r")) \
+                    and (p - 1 == 0 or not (src[p - 2].isalnum() or src[p - 2] == "_")):
+                start = p - 1
             j = i + 1
             while j < n and src[j] != q:
                 if src[j] == "\\" and j + 1 < n:
@@ -462,7 +768,7 @@ def highlight(text_widget, start="1.0", end="end-1c"):
                     j += 1
             if j < n:
                 j += 1
-            text_widget.tag_add("STRING", idx(i), idx(j))
+            text_widget.tag_add("STRING", idx(start), idx(j))
             i = j
             continue
         m = _IDENT_RE.match(src, i)
@@ -470,7 +776,7 @@ def highlight(text_widget, start="1.0", end="end-1c"):
             word = m.group(0)
             if word in KEYWORDS:
                 text_widget.tag_add("KEYWORD", idx(i), idx(m.end()))
-                if word in ("def", "class"):
+                if word in ("def", "class", "func"):
                     k = m.end()
                     while k < n and src[k] in " \t":
                         k += 1
@@ -492,7 +798,7 @@ def highlight(text_widget, start="1.0", end="end-1c"):
 
 
 class DiagnosticEngine:
-    """轻量静态诊断：返回 [(severity, message, line, col, end_col)]"""
+    """杞婚噺闈欐€佽瘖鏂細杩斿洖 [(severity, message, line, col, end_col)]"""
 
     _OPEN_BRACKETS = {"(": ")", "[": "]", "{": "}"}
 
@@ -738,13 +1044,17 @@ class CompletionPopup(tk.Toplevel):
         self.listbox.activate(new_idx)
         self.listbox.see(new_idx)
 
-    def apply(self, prefix):
+    def apply(self, prefix=None):
         sel = self.get_selected()
         if sel is None:
             return False
-        n = len(prefix)
         pos = self.editor.index("insert")
-        start = f"{pos} - {n}c"
+        line = int(pos.split(".")[0])
+        line_text = self.editor.get(f"{line}.0", pos)
+        m = re.search(r"[A-Za-z_][A-Za-z0-9_]*$", line_text)
+        if not m:
+            return False
+        start = f"{line}.{m.start()}"
         self.editor.delete(start, pos)
         self.editor.insert(start, sel)
         return True
@@ -783,6 +1093,7 @@ class FoxText(tk.Text):
 
         self.bind("<<Modified>>", self._on_modified)
         self.bind("<Return>", self._on_return)
+        self.bind("<Control-Return>", self._on_ctrl_return)
         self.bind("<Tab>", self._on_tab)
         self.bind("<Shift-Tab>", self._on_shift_tab)
         self.bind("<Control-MouseWheel>", self._on_wheel)
@@ -916,11 +1227,16 @@ class FoxText(tk.Text):
         self._schedule_squiggle()
         return result
 
-    def _on_return(self, event):
+    def _on_ctrl_return(self, event):
         if self._completion_popup is not None:
-            if self._completion_popup.apply(self._completion_prefix):
+            if self._completion_popup.apply():
                 self._close_completion()
                 return "break"
+        return None
+
+    def _on_return(self, event):
+        if self._completion_popup is not None:
+            self._close_completion()
         line_idx = self.index("insert").split(".")[0]
         line = self.get(f"{line_idx}.0", f"{line_idx}.end")
         indent = re.match(r"[ \t]*", line).group(0)
@@ -931,9 +1247,7 @@ class FoxText(tk.Text):
 
     def _on_tab(self, event):
         if self._completion_popup is not None:
-            if self._completion_popup.apply(self._completion_prefix):
-                self._close_completion()
-                return "break"
+            self._close_completion()
         try:
             first = self.index("sel.first")
             last = self.index("sel.last")
@@ -1130,6 +1444,7 @@ class FoxShell(tk.Text):
         self._completion_job = None
 
         self.bind("<Return>", self._on_return)
+        self.bind("<Control-Return>", self._on_ctrl_return)
         self.bind("<Key>", self._on_key)
         self.bind("<Button-1>", self._on_click)
         self.bind("<<Modified>>", self._on_modified)
@@ -1141,11 +1456,16 @@ class FoxShell(tk.Text):
         self.bind("<Escape>", self._on_escape)
         self.bind("<KeyRelease>", self._on_key_release)
 
-    def _on_tab(self, event):
+    def _on_ctrl_return(self, event):
         if self._completion_popup is not None:
-            if self._completion_popup.apply(self._completion_prefix):
+            if self._completion_popup.apply():
                 self._close_completion()
                 return "break"
+        return None
+
+    def _on_tab(self, event):
+        if self._completion_popup is not None:
+            self._close_completion()
         return None
 
     def _append(self, text, tag="INFO"):
@@ -1153,8 +1473,8 @@ class FoxShell(tk.Text):
         self.see("end")
 
     def banner(self):
-        self._append("Foxange", "INFO")
-        self._append(" - IDLE Shell\n", "INFO")
+        self._append(_INFO_NAME, "INFO")
+        self._append(f" {_INFO_VERSION} - IDLE Shell\n", "INFO")
         self._append('Type "help" for more information.\n\n', "INFO")
 
     def set_prompt(self, cont=False):
@@ -1227,9 +1547,7 @@ class FoxShell(tk.Text):
 
     def _on_return(self, event):
         if self._completion_popup is not None:
-            if self._completion_popup.apply(self._completion_prefix):
-                self._close_completion()
-                return "break"
+            self._close_completion()
 
         if self._input_var is not None:
             value = self.get("iomark", "end-1c")
@@ -1278,7 +1596,7 @@ class FoxShell(tk.Text):
         sys.stdout = buf
         sys.stderr = buf
         try:
-            result = self.runtime.run(code, file_path=self.current_file)
+            result = self.runtime.run(code, file_path=self.current_file, file_dir=os.path.dirname(self.current_file) if self.current_file else None)
             if result is not None:
                 print(repr(result))
         except SyntaxError as e:
@@ -1613,11 +1931,15 @@ class CompletionSettingsDialog(tk.Toplevel):
         self.provider = app.completion_provider
         self.title("Completion Settings")
         self.geometry(COMPLETION_DIALOG_SIZE)
-        self.minsize(360, 340)
+        self.minsize(380, 320)
         self.transient(master)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
         self.enabled_var = tk.BooleanVar(value=self.provider.enabled)
+        self.vars_var = tk.BooleanVar(value=self.provider.vars_enabled)
+        self.funcs_var = tk.BooleanVar(value=self.provider.funcs_enabled)
+        self.classes_var = tk.BooleanVar(value=self.provider.classes_enabled)
+        self.ops_var = tk.BooleanVar(value=self.provider.ops_enabled)
         self._build()
 
     def _build(self):
@@ -1644,61 +1966,97 @@ class CompletionSettingsDialog(tk.Toplevel):
         ttk.Checkbutton(body, text="Enable code completion",
                         variable=self.enabled_var).pack(anchor="w", pady=(0, 10))
 
-        ttk.Label(body, text="Candidate sources (top to bottom = priority):",
+        ttk.Label(body, text="Filter completion candidates by category:",
                   font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 6))
 
-        list_frame = ttk.Frame(body)
-        list_frame.pack(fill="both", expand=True)
+        ttk.Checkbutton(body, text="Variable names (declared variables)",
+                        variable=self.vars_var).pack(anchor="w", pady=2)
+        ttk.Checkbutton(body, text="Function names (built-in & user functions)",
+                        variable=self.funcs_var).pack(anchor="w", pady=2)
+        ttk.Checkbutton(body, text="Class names (class/struct & built-in types)",
+                        variable=self.classes_var).pack(anchor="w", pady=2)
+        ttk.Checkbutton(body, text="Operators (operator & operator keywords)",
+                        variable=self.ops_var).pack(anchor="w", pady=2)
 
-        self.listbox = tk.Listbox(list_frame, height=6,
-                                  activestyle="none",
-                                  font=(FONT_FAMILY, FONT_SIZE),
-                                  exportselection=False)
-        for s in self.provider.sources:
-            self.listbox.insert("end", s)
-        if self.provider.sources:
-            self.listbox.selection_set(0)
-        self.listbox.pack(side="left", fill="both", expand=True)
-
-        btns = ttk.Frame(list_frame)
-        btns.pack(side="left", fill="y", padx=(8, 0))
-
-        ttk.Button(btns, text="Move Up", width=10,
-                   command=lambda: self._move(-1)).pack(pady=2)
-        ttk.Button(btns, text="Move Down", width=10,
-                   command=lambda: self._move(1)).pack(pady=2)
-
-    def _move(self, delta):
-        sel = self.listbox.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        new_idx = idx + delta
-        if new_idx < 0 or new_idx >= self.listbox.size():
-            return
-        val = self.listbox.get(idx)
-        self.listbox.delete(idx)
-        self.listbox.insert(new_idx, val)
-        self.listbox.selection_clear(0, "end")
-        self.listbox.selection_set(new_idx)
-        self.listbox.activate(new_idx)
+        ttk.Label(body, text="Apply completion with Ctrl+Enter only.",
+                  font=("Segoe UI", 9), foreground="#666").pack(
+            anchor="w", pady=(10, 0))
 
     def _reset(self):
         self.enabled_var.set(False)
-        self.listbox.delete(0, "end")
-        for s in CompletionProvider.DEFAULT_SOURCES:
-            self.listbox.insert("end", s)
-        if self.listbox.size():
-            self.listbox.selection_set(0)
+        self.vars_var.set(True)
+        self.funcs_var.set(True)
+        self.classes_var.set(True)
+        self.ops_var.set(True)
 
     def _apply(self):
         self.provider.enabled = bool(self.enabled_var.get())
-        new_sources = list(self.listbox.get(0, "end"))
-        if new_sources:
-            self.provider.sources = new_sources
+        self.provider.vars_enabled = bool(self.vars_var.get())
+        self.provider.funcs_enabled = bool(self.funcs_var.get())
+        self.provider.classes_enabled = bool(self.classes_var.get())
+        self.provider.ops_enabled = bool(self.ops_var.get())
         self.provider.save()
         self.app.refresh_completion_menu()
         self.app.apply_completion_settings()
+
+
+class PkgPromptDialog(tk.Toplevel):
+    def __init__(self, master, title, labels, ok_text="OK", browse_on=-1, browse_kind="dir"):
+        super().__init__(master)
+        self.title(title)
+        self.geometry("440x160" if len(labels) == 1 else "460x200")
+        self.resizable(False, False)
+        self.transient(master)
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.browse_on = browse_on
+        self.browse_kind = browse_kind
+        self.result = None
+        self.vars = [tk.StringVar() for _ in labels]
+        self.entries = []
+        body = ttk.Frame(self, padding=(14, 14, 14, 8))
+        body.pack(side="top", fill="both", expand=True)
+        for i, label_text in enumerate(labels):
+            ttk.Label(body, text=label_text, font=("Segoe UI", 9)).pack(anchor="w", pady=(6, 4))
+            row = ttk.Frame(body)
+            row.pack(fill="x")
+            entry = ttk.Entry(row, textvariable=self.vars[i], font=(FONT_FAMILY, FONT_SIZE))
+            entry.pack(side="left", fill="x", expand=True)
+            self.entries.append(entry)
+            if i == browse_on:
+                if browse_kind == "both":
+                    ttk.Button(row, text="Folder...", width=9,
+                               command=lambda k=i: self._browse(k, "dir")).pack(
+                        side="left", padx=(6, 0))
+                    ttk.Button(row, text="File...", width=9,
+                               command=lambda k=i: self._browse(k, "file")).pack(
+                        side="left", padx=(6, 0))
+                else:
+                    ttk.Button(row, text="Browse...", width=10,
+                               command=lambda k=i: self._browse(k, browse_kind)).pack(
+                        side="left", padx=(6, 0))
+            if i == len(labels) - 1:
+                entry.bind("<Return>", lambda e: self._ok())
+        bottom = ttk.Frame(self, padding=(14, 8, 14, 12))
+        bottom.pack(side="bottom", fill="x")
+        ttk.Button(bottom, text=ok_text, width=10, command=self._ok).pack(side="right")
+        ttk.Button(bottom, text="Cancel", width=10, command=self._cancel).pack(side="right", padx=(6, 0))
+        self.entries[0].focus_set()
+
+    def _browse(self, index, kind):
+        if kind == "dir":
+            path = filedialog.askdirectory(title="Choose directory", parent=self)
+        else:
+            path = filedialog.askopenfilename(title="Choose package file", parent=self)
+        if path:
+            self.vars[index].set(path)
+
+    def _ok(self):
+        self.result = tuple(v.get().strip().strip('"') for v in self.vars)
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
 
 
 class EditorWindow(tk.Toplevel):
@@ -1754,6 +2112,57 @@ class EditorWindow(tk.Toplevel):
         else:
             self.linenum.grid_remove()
 
+    def _pkg_install(self):
+        dlg = PkgPromptDialog(self, "Install Package",
+                              ["Package folder or .zip path:"],
+                              ok_text="Install", browse_on=0, browse_kind="both")
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        src = dlg.result[0]
+        if not src:
+            return
+        self.app._run_pkg_op(_PkgOps.install, src)
+
+    def _pkg_uninstall(self):
+        dlg = PkgPromptDialog(self, "Uninstall Package", ["Package name:"],
+                              ok_text="Uninstall")
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        name = dlg.result[0]
+        if not name:
+            return
+        self.app._run_pkg_op(_PkgOps.uninstall, name)
+
+    def _pkg_list(self):
+        self.app._run_pkg_op(_PkgOps.list_packages)
+
+    def _pkg_info(self):
+        dlg = PkgPromptDialog(self, "Package Info", ["Package name:"],
+                              ok_text="Show Info")
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        name = dlg.result[0]
+        if not name:
+            return
+        self.app._run_pkg_op(_PkgOps.info, name)
+
+    def _pkg_init(self):
+        dlg = PkgPromptDialog(self, "Init New Package",
+                              ["Package name:", "Target directory:"],
+                              ok_text="Init", browse_on=1, browse_kind="dir")
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        name, target_dir = dlg.result
+        if not name:
+            return
+        if not target_dir:
+            return
+        self.app._run_pkg_op(_PkgOps.init_package, target_dir, name)
+
     def _build_menu(self):
         menubar = tk.Menu(self)
 
@@ -1807,6 +2216,15 @@ class EditorWindow(tk.Toplevel):
         m_run.add_command(label="Shell", accelerator="Ctrl+6", command=self.app.show_shell)
         menubar.add_cascade(label="Run", menu=m_run)
 
+        m_pkg = tk.Menu(menubar, tearoff=0)
+        m_pkg.add_command(label="Install Package...", command=self._pkg_install)
+        m_pkg.add_command(label="Uninstall Package...", command=self._pkg_uninstall)
+        m_pkg.add_command(label="List Installed Packages", command=self._pkg_list)
+        m_pkg.add_command(label="Package Info...", command=self._pkg_info)
+        m_pkg.add_separator()
+        m_pkg.add_command(label="Init New Package...", command=self._pkg_init)
+        menubar.add_cascade(label="Package", menu=m_pkg)
+
         m_set = tk.Menu(menubar, tearoff=0)
         m_set.add_command(label="Highlight",
                           command=self.app.open_highlight_dialog)
@@ -1816,7 +2234,7 @@ class EditorWindow(tk.Toplevel):
         m_set.add_checkbutton(label="Code Completion",
                               variable=self.m_completion_var,
                               command=self.app.toggle_completion)
-        m_set.add_command(label="Completion Settings",
+        m_set.add_command(label="Code Completion",
                           command=self.app.open_completion_settings)
 
         self.m_linenum_var = tk.BooleanVar(
@@ -1899,7 +2317,7 @@ class EditorWindow(tk.Toplevel):
 
     def _update_title(self):
         name = os.path.basename(self.filename) if self.filename else "untitled"
-        self.title(f"{'*' if self.modified else ''}{name} - Foxange IDLE")
+        self.title(f"{'*' if self.modified else ''}{name} - {_INFO_NAME} IDLE")
 
     def new_file(self):
         if not self._maybe_save():
@@ -1988,10 +2406,12 @@ class EditorWindow(tk.Toplevel):
 
     def _about(self):
         messagebox.showinfo(
-            "About Foxange IDLE",
-            "Foxange IDLE\n\n"
-            "made by SLC\n"
-            "bugs and your idea : https://bugs-foxange.fwh.is",
+            f"About {_INFO_NAME} IDLE",
+            f"{_INFO_NAME} IDLE\n\n"
+            f"Version {_INFO_VERSION}\n"
+            f"made by {_INFO_AUTHOR}\n"
+            f"bugs and your idea : {_INFO_BUGS_URL}\n"
+            f"website : {_INFO_WEBSITE}",
             parent=self)
 
 
@@ -1999,7 +2419,7 @@ class FoxIdleApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.withdraw()
-        self.root.title("Foxange IDLE")
+        self.root.title(f"{_INFO_NAME} IDLE")
 
         self.runtime = FxRuntime()
         self.shell_win = None
@@ -2101,7 +2521,7 @@ class FoxIdleApp:
 
     def _create_shell(self):
         self.shell_win = tk.Toplevel(self.root)
-        self.shell_win.title("*Foxange IDLE Shell*")
+        self.shell_win.title(f"*{_INFO_NAME} IDLE Shell*")
         self.shell_win.geometry(SHELL_SIZE)
         self.shell_win.protocol("WM_DELETE_WINDOW", self._on_shell_close)
 
@@ -2170,6 +2590,30 @@ class FoxIdleApp:
         sh.set_prompt(cont=False)
         sh.focus_set()
 
+    def _run_pkg_op(self, fn, *args):
+        if self.shell_win is None or not self.shell_win.winfo_exists():
+            self._create_shell()
+        self.shell_win.deiconify()
+        self.shell_win.lift()
+        sh = self.shell_text
+        buf = io.StringIO()
+        old_stdout, old_stderr = sys.stdout, sys.stderr
+        sys.stdout = buf
+        sys.stderr = buf
+        try:
+            fn(*args)
+        except Exception as e:
+            buf.write(f"{type(e).__name__}: {e}\n")
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        out = buf.getvalue()
+        if not out:
+            out = "(no output)\n"
+        sh._append(out, "INFO")
+        if not out.endswith("\n"):
+            sh._append("\n", "INFO")
+
     def open_highlight_dialog(self):
         if self._highlight_dialog is not None \
                 and self._highlight_dialog.winfo_exists():
@@ -2183,10 +2627,22 @@ class FoxIdleApp:
         self.root.destroy()
 
     def run(self):
+        self.root.update_idletasks()
         self.root.mainloop()
 
 
+def _hide_console():
+    try:
+        from ctypes import windll
+        hwnd = windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            windll.user32.ShowWindow(hwnd, 0)
+    except Exception:
+        pass
+
+
 def main():
+    _hide_console()
     try:
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)

@@ -25,6 +25,7 @@ class Parser:
         self._source_lines = None
         self.operator_registry = {}
         self._custom_ops = []
+        self._in_opdef_body = False
 
     @property
     def source_lines(self):
@@ -248,6 +249,7 @@ class Parser:
     def _is_expr_start(self):
         return self.check(
             TokenType.INTEGER, TokenType.FLOAT_LIT, TokenType.STRING,
+            TokenType.FSTRING, TokenType.RSTRING,
             TokenType.CHAR_LIT, TokenType.BOOL_LIT,
             TokenType.LPAREN, TokenType.LBRACKET, TokenType.LBRACE,
             TokenType.MINUS, TokenType.BIT_NOT, TokenType.NOT,
@@ -445,6 +447,9 @@ class Parser:
         ret_tok = self.peek()
         ret_type = self._parse_type()
         self.expect(TokenType.OPERATOR)
+        target_type = None
+        if self.check(TokenType.IDENTIFIER):
+            target_type = self._parse_type()
         self.expect(TokenType.LBRACKET)
         op_tokens = [self.expect(TokenType.STRING, "Expected operator token string").value]
         while self.check(TokenType.COMMA):
@@ -480,10 +485,14 @@ class Parser:
                     self._parse_params(params)
         self.expect(TokenType.RPAREN)
         self._block_intro()
+        saved_opdef = self._in_opdef_body
+        self._in_opdef_body = True
         body = self._parse_body()
+        self._in_opdef_body = saved_opdef
         internal_fmt = self._to_internal_template(fmt_tok.value)
         node = OperatorFuncDef(tuple(op_tokens), params, ret_type, body,
-                               varargs, kwargs, False, False, inline, internal_fmt)
+                               varargs, kwargs, False, False, inline,
+                               internal_fmt, target_type)
         self._pos(node, ret_tok)
         self._register_operator(OperatorDef(ret_type, list(op_tokens), internal_fmt))
         return node
@@ -528,7 +537,7 @@ class Parser:
         self._custom_ops = [(k, r, f) for _, k, r, f in items]
 
     def _try_custom_operator(self, left):
-        if not self._custom_ops:
+        if not self._custom_ops or self._in_opdef_body:
             return None
         for op_tokens, ret_type, fmt in self._custom_ops:
             node = self._match_operator_template(left, op_tokens, fmt)
@@ -645,8 +654,9 @@ class Parser:
     def import_stmt(self):
         self.advance()
         module_parts = []
-        while self.check(TokenType.IDENTIFIER):
-            module_parts.append(self.advance().value)
+        while self.check(TokenType.IDENTIFIER) or self.check(TokenType.INTEGER) or self.check(TokenType.FLOAT_LIT):
+            tok = self.advance()
+            module_parts.append(tok.lexeme if tok.lexeme is not None else str(tok.value))
             if self.check(TokenType.DOT):
                 self.advance()
             else:
@@ -661,8 +671,9 @@ class Parser:
     def from_import(self):
         self.advance()
         module_parts = []
-        while self.check(TokenType.IDENTIFIER):
-            module_parts.append(self.advance().value)
+        while self.check(TokenType.IDENTIFIER) or self.check(TokenType.INTEGER) or self.check(TokenType.FLOAT_LIT):
+            tok = self.advance()
+            module_parts.append(tok.lexeme if tok.lexeme is not None else str(tok.value))
             if self.check(TokenType.DOT):
                 self.advance()
             else:
@@ -1223,9 +1234,24 @@ class Parser:
                     )
             elif self.check(TokenType.LBRACKET):
                 self.advance()
-                index = self.expression()
-                self.expect(TokenType.RBRACKET)
-                expr = IndexAccess(expr, index)
+                start = None
+                if not self.check(TokenType.COLON):
+                    start = self.expression()
+                if self.check(TokenType.COLON):
+                    self.advance()
+                    stop = None
+                    if not self.check(TokenType.COLON) and not self.check(TokenType.RBRACKET):
+                        stop = self.expression()
+                    step = None
+                    if self.check(TokenType.COLON):
+                        self.advance()
+                        if not self.check(TokenType.RBRACKET):
+                            step = self.expression()
+                    self.expect(TokenType.RBRACKET)
+                    expr = IndexAccess(expr, SliceExpr(start, stop, step))
+                else:
+                    self.expect(TokenType.RBRACKET)
+                    expr = IndexAccess(expr, start)
 
             elif self.check(TokenType.LPAREN):
                 self.advance()
@@ -1306,6 +1332,24 @@ class Parser:
         if self.check(TokenType.STRING):
             t = self.advance()
             node = StringLiteral(t.value)
+            self._pos(node, t)
+            return node
+
+        if self.check(TokenType.FSTRING):
+            t = self.advance()
+            node = FStringLiteral(t.value)
+            self._pos(node, t)
+            return node
+
+        if self.check(TokenType.RSTRING):
+            t = self.advance()
+            node = RawStringLiteral(t.value)
+            self._pos(node, t)
+            return node
+
+        if self.check(TokenType.RFSTRING):
+            t = self.advance()
+            node = RawFStringLiteral(t.value)
             self._pos(node, t)
             return node
 

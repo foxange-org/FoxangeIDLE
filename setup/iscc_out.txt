@@ -1,0 +1,79 @@
+Inno Setup 7 Command-Line Compiler
+Copyright (C) 1997-2026 Jordan Russell. All rights reserved.
+Portions Copyright (C) 2000-2026 Martijn Laan. All rights reserved.
+Portions Copyright (C) 2001-2004 Alex Yackimoff. All rights reserved.
+https://www.innosetup.com
+
+Compiler engine version: Inno Setup 7.1.0
+Non-commercial use only
+
+Preprocessing
+   Reading file: C:\Users\slc\AppData\Local\Programs\Inno Setup 7\ISPPBuiltins.iss
+Parsing [Setup] section, line 2
+Parsing [Setup] section, line 3
+Parsing [Setup] section, line 4
+Parsing [Setup] section, line 5
+Parsing [Setup] section, line 6
+Parsing [Setup] section, line 7
+Parsing [Setup] section, line 8
+Parsing [Setup] section, line 9
+Parsing [Setup] section, line 10
+Parsing [Setup] section, line 11
+Parsing [Setup] section, line 12
+Parsing [Setup] section, line 13
+Parsing [Setup] section, line 14
+Parsing [Setup] section, line 15
+Parsing [Setup] section, line 16
+Parsing [Setup] section, line 17
+Parsing [Setup] section, line 18
+Parsing [Setup] section, line 19
+Parsing [Setup] section, line 20
+Reading file (WizardImageFile)
+Reading file (WizardSmallImageFile)
+Preparing Setup program executable
+   Verification successful
+   Updating icons (Setup.e32)
+   Updating version info (Setup.e32)
+Determining language code pages
+Parsing [Languages] section, line 23
+   Reading file: C:\Users\slc\AppData\Local\Programs\Inno Setup 7\Default.isl
+Parsing [Languages] section, line 24
+   Reading file: C:\Users\slc\AppData\Local\Programs\Inno Setup 7\Languages\ChineseSimplified.isl
+Parsing [Languages] section, line 25
+   Reading file: C:\Users\slc\AppData\Local\Programs\Inno Setup 7\Languages\ChineseTraditional.isl
+   Messages in script file
+Reading default messages from Default.isl
+Parsing [Languages] section, line 23
+   Reading file: C:\Users\slc\AppData\Local\Programs\Inno Setup 7\Default.isl
+Parsing [Languages] section, line 24
+   Reading file: C:\Users\slc\AppData\Local\Programs\Inno Setup 7\Languages\ChineseSimplified.isl
+Parsing [Languages] section, line 25
+   Reading file: C:\Users\slc\AppData\Local\Programs\Inno Setup 7\Languages\ChineseTraditional.isl
+Parsing [LangOptions], [Messages], and [CustomMessages] sections
+   Messages in script file
+Reading [Code] section
+Parsing [Tasks] section, line 45
+Parsing [Tasks] section, line 46
+Parsing [Tasks] section, line 47
+Parsing [Icons] section, line 59
+Parsing [Icons] section, line 60
+Parsing [Icons] section, line 61
+Parsing [Registry] section, line 53
+Parsing [Registry] section, line 54
+Parsing [Registry] section, line 55
+Parsing [Registry] section, line 56
+Parsing [Run] section, line 64
+Parsing [Files] section, line 50
+Compiling [Code] section
+Deleting FoxangeIDLE_Setup.exe from output directory
+Creating setup files
+   Verification successful
+   Updating icons (Setup.exe)
+   Compressing: \\?\C:\Users\slc\Desktop\FoxangeIDLE.exe
+   Compressing Setup program executable
+   Updating version info (Setup.exe)
+   Updating manifest (Setup.exe)
+
+
+Successful compile (4.922 sec). Resulting Setup program filename is:
+C:\Users\slc\Desktop\FoxangeIDLE\setup\FoxangeIDLE_Setup.exe

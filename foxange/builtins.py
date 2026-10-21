@@ -371,6 +371,10 @@ class FoxangePair:
         return self.__repr__()
 
 class BuiltinEnvironment:
+
+    def __init__(self):
+        self._py_exec_env = {"__name__": "__main__", "__builtins__": __builtins__}
+
     @staticmethod
     def builtin_print(*args, **kwargs):
         values = list(args)
@@ -432,36 +436,53 @@ class BuiltinEnvironment:
     def builtin_type(value):
         return FoxangeType(value)
 
-    @staticmethod
-    def builtin_run_to_python(*args):
+    def builtin_run_to_python(self, *args):
         if not args:
-            return None
+            return PythonEnvHandle(self._py_exec_env)
         import os
         import subprocess
         import sys
+        import textwrap
         target = args[0]
         extra = [str(a) for a in args[1:]]
         if isinstance(target, str) and os.path.isfile(target):
             result = subprocess.run([sys.executable, target] + extra)
             return result.returncode
-        exec(compile(str(target), "<run_to_python>", "exec"), {"__name__": "__main__", "__builtins__": __builtins__})
+        code = textwrap.dedent(str(target))
+        exec(compile(code, "<run_to_python>", "exec"), self._py_exec_env)
+        return None
+
+class PythonEnvHandle:
+
+    def __init__(self, env):
+        self._env = env
+
+    def clear(self):
+        keep = {"__name__": self._env.get("__name__", "__main__"),
+                "__builtins__": self._env.get("__builtins__", __builtins__)}
+        self._env.clear()
+        self._env.update(keep)
         return None
 
 class FoxangeType:
 
-    def __init__(self, obj):
+    def __init__(self, obj, custom_call=None):
         if isinstance(obj, FoxangeType):
             self._type = obj._type
             self._is_all_error = obj._is_all_error
+            self._custom_call = obj._custom_call
         elif obj == "AllError" or (isinstance(obj, str) and obj == "AllError"):
             self._type = None
             self._is_all_error = True
+            self._custom_call = None
         elif isinstance(obj, type):
             self._type = obj
             self._is_all_error = False
+            self._custom_call = custom_call
         else:
             self._type = type(obj)
             self._is_all_error = False
+            self._custom_call = custom_call
 
     @property
     def name(self):
@@ -497,6 +518,8 @@ class FoxangeType:
     def __call__(self, *args):
         if self._is_all_error:
             raise TypeError("Cannot instantiate AllError")
+        if self._custom_call is not None:
+            return self._custom_call(*args)
         return self._type(*args)
 
 class TypesNamespace:

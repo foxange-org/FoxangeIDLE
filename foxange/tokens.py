@@ -50,6 +50,9 @@ class TokenType(Enum):
     INTEGER = auto()
     FLOAT_LIT = auto()
     STRING = auto()
+    FSTRING = auto()
+    RSTRING = auto()
+    RFSTRING = auto()
     CHAR_LIT = auto()
     BOOL_LIT = auto()
 
@@ -207,11 +210,12 @@ RIGHT_COMPOUND_MAP = {
 
 
 class Token:
-    def __init__(self, type, value, line, col):
+    def __init__(self, type, value, line, col, lexeme=None):
         self.type = type
         self.value = value
         self.line = line
         self.col = col
+        self.lexeme = lexeme
 
     def __repr__(self):
         return f"Token({self.type}, {self.value!r}, L{self.line}:{self.col})"

@@ -9,6 +9,7 @@ class Lexer:
         self.tokens = []
         self.indent_stack = [0]
         self.paren_depth = 0
+        self.fstring_expr_mode = False
 
     def error(self, msg):
         raise SyntaxError(f"Lexer Error at line {self.line}, col {self.col}: {msg}")
@@ -99,6 +100,93 @@ class Lexer:
         self.advance()
         return Token(TokenType.STRING, s, start_line, start_col)
 
+    def read_fstring(self, quote):
+        start_line, start_col = self.line, self.col
+        self.advance()
+        s = ""
+        while self.peek() and self.peek() != quote:
+            if self.peek() == "\\":
+                self.advance()
+                esc = self.advance()
+                if esc == "n":
+                    s += "\n"
+                elif esc == "t":
+                    s += "\t"
+                elif esc == "r":
+                    s += "\r"
+                elif esc == "0":
+                    octal_digits = ""
+                    for _ in range(2):
+                        nxt = self.peek()
+                        if nxt and nxt in "01234567":
+                            octal_digits += self.advance()
+                        else:
+                            break
+                    if octal_digits:
+                        s += chr(int(octal_digits, 8))
+                    else:
+                        s += "\0"
+                elif esc == "x":
+                    hex_digits = ""
+                    for _ in range(2):
+                        nxt = self.peek()
+                        if nxt and nxt in "0123456789abcdefABCDEF":
+                            hex_digits += self.advance()
+                        else:
+                            break
+                    if hex_digits:
+                        s += chr(int(hex_digits, 16))
+                    else:
+                        s += "\\x"
+                elif esc == "e":
+                    s += "\033"
+                elif esc == "\\":
+                    s += "\\"
+                elif esc == quote:
+                    s += quote
+                else:
+                    s += "\\" + (esc or "")
+            else:
+                s += self.advance()
+        if not self.peek():
+            self.error("Unterminated string literal")
+        self.advance()
+        return Token(TokenType.FSTRING, s, start_line, start_col)
+
+    def read_rstring(self, quote):
+        start_line, start_col = self.line, self.col
+        self.advance()
+        s = ""
+        while self.peek() and self.peek() != quote:
+            ch = self.advance()
+            if ch == "\\":
+                s += ch
+                if self.peek():
+                    s += self.advance()
+            else:
+                s += ch
+        if not self.peek():
+            self.error("Unterminated string literal")
+        self.advance()
+        return Token(TokenType.RSTRING, s, start_line, start_col)
+
+    def read_rfstring(self, quote):
+        start_line, start_col = self.line, self.col
+        self.advance()
+        s = ""
+        while self.peek() and self.peek() != quote:
+            ch = self.advance()
+            if ch == "\\":
+                s += ch
+                if self.peek():
+                    s += self.advance()
+            else:
+                s += ch
+        if not self.peek():
+            self.error("Unterminated string literal")
+        self.advance()
+        return Token(TokenType.RFSTRING, s, start_line, start_col)
+
     def read_char(self):
         start_line, start_col = self.line, self.col
         self.advance()
@@ -165,8 +253,8 @@ class Lexer:
         if self.peek() and self.peek().isalpha():
             self.error(f"Invalid number: {num}{self.peek()}")
         if is_float:
-            return Token(TokenType.FLOAT_LIT, float(num), start_line, start_col)
-        return Token(TokenType.INTEGER, int(num), start_line, start_col)
+            return Token(TokenType.FLOAT_LIT, float(num), start_line, start_col, num)
+        return Token(TokenType.INTEGER, int(num), start_line, start_col, num)
 
     def read_identifier(self):
         start_line, start_col = self.line, self.col
@@ -220,12 +308,33 @@ class Lexer:
                 self.advance()
                 continue
 
+            if ((ch == "f" and self.peek(1) == "r")
+                    or (ch == "r" and self.peek(1) == "f")) \
+                    and self.peek(2) in ('"', "'"):
+                self.advance()
+                self.advance()
+                tokens.append(self.read_rfstring(self.peek()))
+                continue
+
+            if ch == "f" and self.peek(1) == '"':
+                self.advance()
+                tokens.append(self.read_fstring('"'))
+                continue
+
+            if ch == "r" and self.peek(1) in ('"', "'"):
+                self.advance()
+                tokens.append(self.read_rstring(self.peek()))
+                continue
+
             if ch == '"':
                 tokens.append(self.read_string('"'))
                 continue
 
             if ch == "'":
-                tokens.append(self.read_char())
+                if self.fstring_expr_mode:
+                    tokens.append(self.read_string("'"))
+                else:
+                    tokens.append(self.read_char())
                 continue
 
             if ch.isdigit():
@@ -377,6 +486,14 @@ class Lexer:
             if ch == "%" and self.peek(1) == "=":
                 self.advance(); self.advance()
                 tokens.append(Token(TokenType.PERCENT_ASSIGN, "%=", line, col))
+                continue
+            if ch == "%":
+                cnt = 1
+                self.advance()
+                while self.peek() == "%":
+                    self.advance()
+                    cnt += 1
+                tokens.append(Token(TokenType.PERCENT, "%" * cnt, line, col))
                 continue
             if ch == "&" and self.peek(1) == "=":
                 self.advance(); self.advance()
